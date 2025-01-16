@@ -1,8 +1,11 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use softbuffer::{Context, Surface};
+use threadpool::ThreadPool;
+use threadpool_scope::scope_with;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -20,6 +23,7 @@ struct App {
     last_frame_time: Instant,
     n_frame: u32,
     particles: Particles,
+    thread_pool: ThreadPool,
 }
 
 impl Default for App {
@@ -29,6 +33,7 @@ impl Default for App {
             last_frame_time: Instant::now(),
             n_frame: 0,
             particles: Particles::new(10_000_000, 1280, 720),
+            thread_pool: ThreadPool::new(10),
         }
     }
 }
@@ -82,28 +87,63 @@ impl ApplicationHandler for App {
                     .update(&frametime, Some((1280.0 / 2.0, 720.0 / 2.0)), false);
 
                 let mut buffer = surface.buffer_mut().unwrap();
+                let n_buffer_chunks = 10000;
+                let buffer_chunk_size = (width * height / n_buffer_chunks) as usize;
 
                 for pixel in buffer.iter_mut() {
                     *pixel = 0;
                 }
 
-                for particle in &self.particles.particles {
-                    if particle.x < 0.0
-                        || particle.x >= width as f32
-                        || particle.y < 0.0
-                        || particle.y >= height as f32
-                    {
-                        continue;
+                let buffer_chunks = &buffer
+                    .chunks_exact_mut(buffer_chunk_size)
+                    .map(Mutex::new)
+                    .collect::<Vec<_>>();
+                let particles_chunks = self.particles.particles.chunks(10000);
+
+                scope_with(&self.thread_pool, |scope| {
+                    for particles_chunk in particles_chunks {
+                        scope.execute(move || {
+                            for particle in particles_chunk {
+                                if particle.x < 0.0
+                                    || particle.x >= width as f32
+                                    || particle.y < 0.0
+                                    || particle.y >= height as f32
+                                {
+                                    continue;
+                                }
+
+                                let x = particle.x as usize;
+                                let y = particle.y as usize;
+                                let index = x + y * width as usize;
+                                let Ok(mut buffer_chunk) =
+                                    buffer_chunks[index / buffer_chunk_size].lock()
+                                else {
+                                    // println!("could not get lock");
+                                    continue;
+                                };
+
+                                buffer_chunk[index % buffer_chunk_size] = 0x00FF00FF;
+                            }
+                        });
                     }
-                    let x = particle.x as usize;
-                    let y = particle.y as usize;
-                    let red = particle.x * 255.0 / width as f32;
-                    let green = particle.y * 255.0 / height as f32;
-                    let blue: f32 =
-                        (1.0 - (particle.x / width as f32) - (particle.y / height as f32)) * 255.0;
-                    buffer[x + y * width as usize] =
-                        ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32);
-                }
+                });
+                // for particle in &self.particles.particles {
+                //     if particle.x < 0.0
+                //         || particle.x >= width as f32
+                //         || particle.y < 0.0
+                //         || particle.y >= height as f32
+                //     {
+                //         continue;
+                //     }
+                //     let x = particle.x as usize;
+                //     let y = particle.y as usize;
+                //     let red = particle.x * 255.0 / width as f32;
+                //     let green = particle.y * 255.0 / height as f32;
+                //     let blue: f32 =
+                //         (1.0 - (particle.x / width as f32) - (particle.y / height as f32)) * 255.0;
+                //     buffer[x + y * width as usize] =
+                //         ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32);
+                // }
 
                 buffer.present().unwrap();
                 window.request_redraw();
