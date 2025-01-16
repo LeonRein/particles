@@ -1,3 +1,4 @@
+use core::f32;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -7,7 +8,8 @@ use softbuffer::{Context, Surface};
 use threadpool::ThreadPool;
 use threadpool_scope::scope_with;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -24,6 +26,8 @@ struct App {
     n_frame: u32,
     particles: Particles,
     thread_pool: ThreadPool,
+    mouse_pos: Option<(f32, f32)>,
+    mouse_down: bool,
 }
 
 impl Default for App {
@@ -34,6 +38,8 @@ impl Default for App {
             n_frame: 0,
             particles: Particles::new(10_000_000, 1280, 720),
             thread_pool: ThreadPool::new(10),
+            mouse_pos: None,
+            mouse_down: false,
         }
     }
 }
@@ -63,6 +69,19 @@ impl ApplicationHandler for App {
                 println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+            } => {
+                self.mouse_pos = Some((position.x as f32, position.y as f32));
+            }
+            WindowEvent::MouseInput {
+                device_id: _,
+                state,
+                button: MouseButton::Left,
+            } => {
+                self.mouse_down = state == ElementState::Pressed;
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let frametime = now.duration_since(self.last_frame_time);
@@ -84,11 +103,11 @@ impl ApplicationHandler for App {
                     .unwrap();
 
                 self.particles
-                    .update(&frametime, Some((1280.0 / 2.0, 720.0 / 2.0)), false);
+                    .update(&frametime, self.mouse_pos, self.mouse_down);
 
                 let mut buffer = surface.buffer_mut().unwrap();
                 let n_buffer_chunks = 10000;
-                let buffer_chunk_size = (width * height / n_buffer_chunks) as usize;
+                let buffer_chunk_size = buffer.len() / n_buffer_chunks;
 
                 for pixel in buffer.iter_mut() {
                     *pixel = 0;
@@ -100,21 +119,33 @@ impl ApplicationHandler for App {
                     .collect::<Vec<_>>();
                 let particles_chunks = self.particles.particles.chunks(10000);
 
+                let buffer_chunk_size = buffer_chunks[0].lock().unwrap().len();
+
                 scope_with(&self.thread_pool, |scope| {
                     for particles_chunk in particles_chunks {
                         scope.execute(move || {
                             for particle in particles_chunk {
                                 if particle.x < 0.0
-                                    || particle.x >= width as f32
+                                    || particle.x as usize >= width as usize
                                     || particle.y < 0.0
-                                    || particle.y >= height as f32
+                                    || particle.y as usize >= height as usize
                                 {
                                     continue;
                                 }
 
-                                let x = particle.x as usize;
-                                let y = particle.y as usize;
+                                let x = particle.x.floor() as usize;
+                                let y = particle.y.floor() as usize;
+                                let red = particle.x * 255.0 / width as f32;
+                                let green = particle.y * 255.0 / height as f32;
+                                let blue: f32 = (1.0
+                                    - (particle.x / width as f32)
+                                    - (particle.y / height as f32))
+                                    * 255.0;
                                 let index = x + y * width as usize;
+                                let bufffer_chunk_index = index / buffer_chunk_size;
+                                if bufffer_chunk_index > buffer_chunks.len() - 1 {
+                                    return;
+                                }
                                 let Ok(mut buffer_chunk) =
                                     buffer_chunks[index / buffer_chunk_size].lock()
                                 else {
@@ -122,7 +153,8 @@ impl ApplicationHandler for App {
                                     continue;
                                 };
 
-                                buffer_chunk[index % buffer_chunk_size] = 0x00FF00FF;
+                                buffer_chunk[index % buffer_chunk_size] =
+                                    ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32);
                             }
                         });
                     }
