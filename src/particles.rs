@@ -1,9 +1,12 @@
 use std::time::Duration;
 
 use rand::prelude::*;
+use threadpool::ThreadPool;
+use threadpool_scope::scope_with;
 
 pub struct Particles {
     pub particles: Vec<Particle>,
+    thread_pool: ThreadPool,
 }
 
 impl Particles {
@@ -14,6 +17,7 @@ impl Particles {
         }
         Self {
             particles: particles_vec,
+            thread_pool: ThreadPool::new(16),
         }
     }
 
@@ -26,19 +30,27 @@ impl Particles {
     ) {
         let time_norm = frametime.as_micros() as f32 / 16666.0;
         let fric_norm = f32::powf(0.999, time_norm);
-        let grav_norm = 3.0 * time_norm;
+        let grav_norm = 1.0 * time_norm;
 
-        self.particles.iter_mut().for_each(|particle| {
-            if mouse_down {
-                if let Some((x, y)) = mouse_pos {
-                    particle.apply_grav(x, y, grav_norm);
-                }
+        let particles_chunks = self.particles.chunks_mut(10000);
+
+        scope_with(&self.thread_pool, |scope| {
+            for particles_chunk in particles_chunks {
+                scope.execute(move || {
+                    for particle in particles_chunk {
+                        if mouse_down {
+                            if let Some((x, y)) = mouse_pos {
+                                particle.apply_grav(x, y, grav_norm);
+                            }
+                        }
+
+                        particle.apply_fric(fric_norm);
+
+                        particle.x += particle.dx;
+                        particle.y += particle.dy;
+                    }
+                });
             }
-
-            particle.apply_fric(fric_norm);
-
-            particle.x += particle.dx;
-            particle.y += particle.dy;
         });
     }
 }
