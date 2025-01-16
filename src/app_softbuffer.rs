@@ -8,7 +8,6 @@ use softbuffer::{Context, Surface};
 use threadpool::ThreadPool;
 use threadpool_scope::scope_with;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
@@ -36,7 +35,7 @@ impl Default for App {
             data: None,
             last_frame_time: Instant::now(),
             n_frame: 0,
-            particles: Particles::new(10_000_000, 1280, 720),
+            particles: Particles::new(5_000_000, 1280, 720),
             thread_pool: ThreadPool::new(10),
             mouse_pos: None,
             mouse_down: false,
@@ -117,7 +116,7 @@ impl ApplicationHandler for App {
                     .chunks_exact_mut(buffer_chunk_size)
                     .map(Mutex::new)
                     .collect::<Vec<_>>();
-                let particles_chunks = self.particles.particles.chunks(10000);
+                let particles_chunks = self.particles.particles.chunks(16);
 
                 let buffer_chunk_size = buffer_chunks[0].lock().unwrap().len();
 
@@ -141,20 +140,31 @@ impl ApplicationHandler for App {
                                     - (particle.x / width as f32)
                                     - (particle.y / height as f32))
                                     * 255.0;
+
                                 let index = x + y * width as usize;
                                 let bufffer_chunk_index = index / buffer_chunk_size;
                                 if bufffer_chunk_index > buffer_chunks.len() - 1 {
                                     return;
                                 }
                                 let Ok(mut buffer_chunk) =
-                                    buffer_chunks[index / buffer_chunk_size].lock()
+                                    buffer_chunks[index / buffer_chunk_size].try_lock()
                                 else {
                                     // println!("could not get lock");
                                     continue;
                                 };
 
-                                buffer_chunk[index % buffer_chunk_size] =
-                                    ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32);
+                                let val = &mut buffer_chunk[index % buffer_chunk_size];
+                                let mut colors = val.to_le_bytes();
+                                if *val == 0 {
+                                    *val = ((red as u32) << 16)
+                                        + ((green as u32) << 8)
+                                        + (blue as u32);
+                                } else {
+                                    colors.iter_mut().take(3).for_each(|c| {
+                                        *c = (*c).saturating_add(2);
+                                    });
+                                    *val = u32::from_le_bytes(colors);
+                                }
                             }
                         });
                     }

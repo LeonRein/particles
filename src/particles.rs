@@ -29,7 +29,7 @@ impl Particles {
         mouse_down: bool,
     ) {
         let time_norm = frametime.as_micros() as f32 / 16666.0;
-        let fric_norm = f32::powf(0.999, time_norm);
+        let fric_norm = f32::powf(0.99, time_norm);
         let grav_norm = 1.0 * time_norm;
 
         let particles_chunks = self.particles.chunks_mut(10000);
