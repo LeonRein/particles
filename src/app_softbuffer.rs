@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::Instant;
 
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -10,11 +10,14 @@ use winit::window::{Window, WindowId};
 
 use crate::particles::Particles;
 
+struct AppData {
+    window: Rc<Window>,
+    surface: Surface<Rc<Window>, Rc<Window>>,
+}
+
 struct App {
-    window: Option<Rc<Window>>,
-    context: Option<Context<Rc<Window>>>,
-    surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-    last_frame_time: SystemTime,
+    data: Option<AppData>,
+    last_frame_time: Instant,
     n_frame: u32,
     particles: Particles,
 }
@@ -22,47 +25,42 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         App {
-            window: None,
-            surface: None,
-            context: None,
-            last_frame_time: SystemTime::now(),
+            data: None,
+            last_frame_time: Instant::now(),
             n_frame: 0,
-            particles: Particles::new(100_000, 1280, 720),
+            particles: Particles::new(10_000_000, 1280, 720),
         }
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.window = Some(Rc::new(
+        let window = Rc::new(
             event_loop
                 .create_window(Window::default_attributes())
                 .unwrap(),
-        ));
-        if let Some(window) = &self.window {
-            let context = Context::new(Rc::clone(window)).unwrap();
-            self.surface = Some(softbuffer::Surface::new(&context, Rc::clone(window)).unwrap());
-            self.context = Some(context);
-        }
+        );
+        let context = Context::new(Rc::clone(&window)).unwrap();
+        let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).unwrap();
+        self.data = Some(AppData { surface, window })
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _ = id;
-        let Some(window) = &self.window else {
-            return;
+        let Some(AppData { window, surface }) = &mut self.data else {
+            panic!();
         };
-        let Some(surface) = &mut self.surface else {
-            return;
-        };
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        self.n_frame += 1;
         match event {
             WindowEvent::CloseRequested => {
                 println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                self.n_frame += 1;
-                let now = SystemTime::now();
-                let frametime = now.duration_since(self.last_frame_time).unwrap_or_default();
+                let now = Instant::now();
+                let frametime = now.duration_since(self.last_frame_time);
                 self.last_frame_time = now;
                 if self.n_frame % 100 == 0 {
                     println!("#{}: FPS = {}", self.n_frame, 1.0 / frametime.as_secs_f32());
@@ -84,15 +82,10 @@ impl ApplicationHandler for App {
                     .update(&frametime, Some((1280.0 / 2.0, 720.0 / 2.0)), false);
 
                 let mut buffer = surface.buffer_mut().unwrap();
-                // for index in 0..(width * height) {
-                //     let y = index / width;
-                //     let x = index % width;
-                //     let red = x % 255;
-                //     let green = y % 255;
-                //     let blue = (x * y) % 255;
 
-                //     buffer[index as usize] = blue | (green << 8) | (red << 16);
-                // }
+                for pixel in buffer.iter_mut() {
+                    *pixel = 0;
+                }
 
                 for particle in &self.particles.particles {
                     if particle.x < 0.0
@@ -113,9 +106,7 @@ impl ApplicationHandler for App {
                 }
 
                 buffer.present().unwrap();
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
+                window.request_redraw();
             }
             _ => (),
         }
