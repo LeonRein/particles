@@ -2,10 +2,8 @@ use core::{f32, panic};
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::Mutex;
 use std::time::Instant;
 
-use crossbeam::channel::bounded;
 use scoped_threadpool::Pool;
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -16,7 +14,6 @@ use winit::window::{Window, WindowId};
 use crate::particles::Particles;
 
 const THREADS: usize = 16;
-const PIXEL_CHUNK_LEN: usize = 1000;
 
 struct AppData {
     window: Rc<Window>,
@@ -91,9 +88,9 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let frametime = now.duration_since(self.last_frame_time);
                 self.last_frame_time = now;
-                // if self.n_frame % 100 == 0 {
-                println!("#{}: FPS = {}", self.n_frame, 1.0 / frametime.as_secs_f32());
-                // }
+                if self.n_frame % 100 == 0 {
+                    println!("#{}: FPS = {}", self.n_frame, 1.0 / frametime.as_secs_f32());
+                }
 
                 let (width, height) = {
                     let size = window.inner_size();
@@ -110,21 +107,23 @@ impl ApplicationHandler for App {
                 self.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
-                let super_mutex_count_buffer = &(0..THREADS)
-                    .map(|_| vec![0_u16; width * height])
-                    .map(Mutex::new)
-                    .collect::<Vec<_>>();
-                let (count_buffer_tx, count_buffer_rx) = &bounded::<&Mutex<Vec<u16>>>(THREADS);
-                super_mutex_count_buffer
-                    .iter()
-                    .for_each(|mutex_count_buffer| {
-                        count_buffer_tx.send(mutex_count_buffer).unwrap();
-                    });
+                let count_chunk_len = self.particles.particles.len() / THREADS;
 
-                let particles_chunks = self.particles.particles.chunks(THREADS);
+                let particles_chunks = self.particles.particles.chunks(count_chunk_len);
+
+                let mut super_count_buffer = (0..particles_chunks.len())
+                    .map(|_| vec![0_u16; width * height])
+                    .collect::<Vec<_>>();
+
+                // let mut count_buffer = vec![0_u16; width * height * COUNT_CHUNK_LEN];
+                // let super_count_buffer = &count_buffer
+                //     .chunks_exact_mut(COUNT_CHUNK_LEN)
+                //     .collect::<Vec<_>>();
 
                 self.threadpool.borrow_mut().scoped(|scope| {
-                    for particles_chunk in particles_chunks {
+                    for (particles_chunk, count_buffer) in
+                        particles_chunks.zip(super_count_buffer.iter_mut())
+                    {
                         scope.execute(move || {
                             for particle in particles_chunk {
                                 if particle.x < 0.0
@@ -135,10 +134,8 @@ impl ApplicationHandler for App {
                                     continue;
                                 }
 
-                                let mutex_buffer = count_buffer_rx.recv().unwrap();
-                                let mut buffer = mutex_buffer.lock().unwrap();
-                                buffer[particle.x as usize + particle.y as usize * width] += 1;
-                                let _ = count_buffer_tx.send(mutex_buffer);
+                                count_buffer[particle.x as usize + particle.y as usize * width] +=
+                                    1;
                             }
                         });
                     }
@@ -147,19 +144,17 @@ impl ApplicationHandler for App {
                 let mut pixel_buffer = surface.buffer_mut().unwrap();
                 pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
+                let pixel_chunk_len = width * height / THREADS / 2;
+
                 let pixel_buffer_chunks = pixel_buffer
-                    .chunks_exact_mut(PIXEL_CHUNK_LEN)
+                    .chunks_exact_mut(pixel_chunk_len)
                     .collect::<Vec<_>>();
 
-                let super_count_buffer = super_mutex_count_buffer
-                    .iter()
-                    .map(|mutex_count_buffer| mutex_count_buffer.lock().unwrap())
-                    .collect::<Vec<_>>();
                 let super_count_buffer_chunks = &super_count_buffer
                     .iter()
                     .map(|count_buffer| {
                         count_buffer
-                            .chunks_exact(PIXEL_CHUNK_LEN)
+                            .chunks_exact(pixel_chunk_len)
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
@@ -173,11 +168,19 @@ impl ApplicationHandler for App {
                         }
                         scope.execute(move || {
                             for (i_pixel, pixel) in pixel_buffer_chunk.iter_mut().enumerate() {
-                                // println!("i_pixel = {}", i_pixel);
-                                // println!("counts.len() = {}", counts.len());
-                                *pixel =
-                                    count_chunks.iter().fold(0_u16, |a, b| a + b[i_pixel]) as u32; // for pixel in pixel_buffer_chunk.iter_mut() {
-                                //     *pixel = 0x00FF00FF;
+                                let index = i_chunk * pixel_chunk_len + i_pixel;
+                                let x = (index % width) as f32;
+                                let y = (index / width) as f32;
+                                let count = count_chunks.iter().fold(0_u16, |a, b| a + b[i_pixel])
+                                    as f32
+                                    * 32.0; // for pixel in pixel_buffer_chunk.iter_mut() {
+                                let red = (x * count / width as f32) as u8;
+                                let green = (y * count / height as f32) as u8;
+                                let blue = ((1.0 - (x / width as f32) - (y / height as f32))
+                                    * count) as u8;
+                                *pixel = ((red as u32) << THREADS)
+                                    + ((green as u32) << 8)
+                                    + (blue as u32)
                             }
                         });
                     }

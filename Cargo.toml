@@ -4,12 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-crossbeam = "0.8.4"
 minifb = "0.27.0"
 rand = "0.8.5"
 rayon = "1.10.0"
 scoped_threadpool = "0.1.9"
 softbuffer = "0.4.6"
-threadpool = "1.8.1"
-threadpool_scope = "0.1.0"
 winit = "0.30.8"
