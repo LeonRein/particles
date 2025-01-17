@@ -1090,6 +1090,7 @@ dependencies = [
  "minifb",
  "rand",
  "rayon",
+ "scoped_threadpool",
  "softbuffer",
  "threadpool",
  "threadpool_scope",

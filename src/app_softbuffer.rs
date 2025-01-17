@@ -1,12 +1,12 @@
 use core::f32;
+use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use scoped_threadpool::Pool;
 use softbuffer::{Context, Surface};
-use threadpool::ThreadPool;
-use threadpool_scope::scope_with;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -24,19 +24,21 @@ struct App {
     last_frame_time: Instant,
     n_frame: u32,
     particles: Particles,
-    thread_pool: ThreadPool,
+    threadpool: Rc<RefCell<Pool>>,
     mouse_pos: Option<(f32, f32)>,
     mouse_down: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
+        let threadpool = Rc::new(RefCell::new(Pool::new(16)));
+        let particles = Particles::new(5_000_000, 1280, 720, Rc::clone(&threadpool));
         App {
             data: None,
             last_frame_time: Instant::now(),
             n_frame: 0,
-            particles: Particles::new(5_000_000, 1280, 720),
-            thread_pool: ThreadPool::new(10),
+            threadpool,
+            particles,
             mouse_pos: None,
             mouse_down: false,
         }
@@ -105,7 +107,7 @@ impl ApplicationHandler for App {
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
                 let mut buffer = surface.buffer_mut().unwrap();
-                let n_buffer_chunks = 10000;
+                let n_buffer_chunks = usize::min(10000, buffer.len());
                 let buffer_chunk_size = buffer.len() / n_buffer_chunks;
 
                 for pixel in buffer.iter_mut() {
@@ -118,22 +120,20 @@ impl ApplicationHandler for App {
                     .collect::<Vec<_>>();
                 let particles_chunks = self.particles.particles.chunks(16);
 
-                let buffer_chunk_size = buffer_chunks[0].lock().unwrap().len();
-
-                scope_with(&self.thread_pool, |scope| {
+                self.threadpool.borrow_mut().scoped(|scope| {
                     for particles_chunk in particles_chunks {
                         scope.execute(move || {
                             for particle in particles_chunk {
                                 if particle.x < 0.0
-                                    || particle.x as usize >= width as usize
+                                    || particle.x as usize >= width as usize - 1
                                     || particle.y < 0.0
-                                    || particle.y as usize >= height as usize
+                                    || particle.y as usize >= height as usize - 1
                                 {
                                     continue;
                                 }
 
-                                let x = particle.x.floor() as usize;
-                                let y = particle.y.floor() as usize;
+                                let x = particle.x as usize;
+                                let y = particle.y as usize;
                                 let red = particle.x * 255.0 / width as f32;
                                 let green = particle.y * 255.0 / height as f32;
                                 let blue: f32 = (1.0
@@ -142,10 +142,6 @@ impl ApplicationHandler for App {
                                     * 255.0;
 
                                 let index = x + y * width as usize;
-                                let bufffer_chunk_index = index / buffer_chunk_size;
-                                if bufffer_chunk_index > buffer_chunks.len() - 1 {
-                                    return;
-                                }
                                 let Ok(mut buffer_chunk) =
                                     buffer_chunks[index / buffer_chunk_size].try_lock()
                                 else {

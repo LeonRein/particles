@@ -1,23 +1,21 @@
-use std::time::Duration;
-
 use rand::prelude::*;
-use threadpool::ThreadPool;
-use threadpool_scope::scope_with;
+use scoped_threadpool::Pool;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 pub struct Particles {
     pub particles: Vec<Particle>,
-    thread_pool: ThreadPool,
+    threadpool: Rc<RefCell<Pool>>,
 }
 
 impl Particles {
-    pub fn new(n: usize, width: usize, height: usize) -> Self {
+    pub fn new(n: usize, width: usize, height: usize, threadpool: Rc<RefCell<Pool>>) -> Self {
         let mut particles_vec = Vec::<Particle>::with_capacity(n);
         for _ in 0..n {
             particles_vec.push(Particle::new_random(width, height));
         }
         Self {
             particles: particles_vec,
-            thread_pool: ThreadPool::new(16),
+            threadpool,
         }
     }
 
@@ -34,7 +32,7 @@ impl Particles {
 
         let particles_chunks = self.particles.chunks_mut(10000);
 
-        scope_with(&self.thread_pool, |scope| {
+        self.threadpool.borrow_mut().scoped(|scope| {
             for particles_chunk in particles_chunks {
                 scope.execute(move || {
                     for particle in particles_chunk {
