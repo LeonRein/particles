@@ -10,13 +10,19 @@ pub struct Particles {
 
 impl Particles {
     pub fn new(n: usize, width: usize, height: usize, threadpool: Rc<RefCell<Pool>>) -> Self {
-        let mut particles_vec = Vec::<Particle>::with_capacity(n);
+        let mut particles = Vec::<Particle>::with_capacity(n);
         for _ in 0..n {
-            particles_vec.push(Particle::new_random(width, height));
+            particles.push(Particle::new_random(width, height));
         }
         Self {
-            particles: particles_vec,
+            particles,
             threadpool,
+        }
+    }
+
+    pub fn add_particles(&mut self, n: usize, width: usize, height: usize) {
+        for _ in 0..n {
+            self.particles.push(Particle::new_random(width, height));
         }
     }
 

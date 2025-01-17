@@ -12,8 +12,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::particles::Particles;
+use std::thread::available_parallelism;
 
-const THREADS: usize = 16;
+const TARGET_FRAMETIME: f32 = 20.0;
+const N_INITIAL_PARTICELS: usize = 100_000;
 
 struct AppData {
     window: Rc<Window>,
@@ -28,12 +30,15 @@ struct App {
     threadpool: Rc<RefCell<Pool>>,
     mouse_pos: Option<(f32, f32)>,
     mouse_down: bool,
+    n_threads: usize,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let threadpool = Rc::new(RefCell::new(Pool::new(THREADS as u32)));
-        let particles = Particles::new(5_000_000, 1280, 720, Rc::clone(&threadpool));
+        let n_threads = available_parallelism().unwrap().get();
+        println!("n_threads = {}", n_threads);
+        let threadpool = Rc::new(RefCell::new(Pool::new(n_threads as u32)));
+        let particles = Particles::new(N_INITIAL_PARTICELS, 1280, 720, Rc::clone(&threadpool));
         App {
             data: None,
             last_frame_time: Instant::now(),
@@ -42,6 +47,7 @@ impl Default for App {
             particles,
             mouse_pos: None,
             mouse_down: false,
+            n_threads,
         }
     }
 }
@@ -70,6 +76,14 @@ impl ApplicationHandler for App {
                 println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
+            WindowEvent::Resized(size) => {
+                self.particles = Particles::new(
+                    N_INITIAL_PARTICELS,
+                    size.width as usize,
+                    size.height as usize,
+                    Rc::clone(&self.threadpool),
+                )
+            }
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
@@ -90,6 +104,7 @@ impl ApplicationHandler for App {
                 self.last_frame_time = now;
                 if self.n_frame % 100 == 0 {
                     println!("#{}: FPS = {}", self.n_frame, 1.0 / frametime.as_secs_f32());
+                    println!("n_particles = {}", self.particles.particles.len());
                 }
 
                 let (width, height) = {
@@ -97,17 +112,21 @@ impl ApplicationHandler for App {
                     (size.width as usize, size.height as usize)
                 };
 
-                surface
-                    .resize(
-                        NonZeroU32::new(width as u32).unwrap(),
-                        NonZeroU32::new(height as u32).unwrap(),
-                    )
-                    .unwrap();
+                let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
+                if frametime_ratio > 1.0 {
+                    let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
+                    self.particles.add_particles(n as usize, width, height);
+                } else {
+                    let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
+                    for _ in 0..n as usize {
+                        self.particles.particles.pop();
+                    }
+                }
 
                 self.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
-                let count_chunk_len = self.particles.particles.len() / THREADS;
+                let count_chunk_len = self.particles.particles.len() / self.n_threads;
 
                 let particles_chunks = self.particles.particles.chunks(count_chunk_len);
 
@@ -141,10 +160,17 @@ impl ApplicationHandler for App {
                     }
                 });
 
+                surface
+                    .resize(
+                        NonZeroU32::new(width as u32).unwrap(),
+                        NonZeroU32::new(height as u32).unwrap(),
+                    )
+                    .unwrap();
+
                 let mut pixel_buffer = surface.buffer_mut().unwrap();
                 pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
-                let pixel_chunk_len = width * height / THREADS / 2;
+                let pixel_chunk_len = usize::max(width * height / self.n_threads / 100, 1);
 
                 let pixel_buffer_chunks = pixel_buffer
                     .chunks_exact_mut(pixel_chunk_len)
@@ -178,9 +204,8 @@ impl ApplicationHandler for App {
                                 let green = (y * count / height as f32) as u8;
                                 let blue = ((1.0 - (x / width as f32) - (y / height as f32))
                                     * count) as u8;
-                                *pixel = ((red as u32) << THREADS)
-                                    + ((green as u32) << 8)
-                                    + (blue as u32)
+                                *pixel =
+                                    ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32)
                             }
                         });
                     }
