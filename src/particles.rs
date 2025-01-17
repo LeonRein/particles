@@ -1,4 +1,5 @@
 use rand::prelude::*;
+use rand_distr::{Distribution, Normal};
 use scoped_threadpool::Pool;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
@@ -66,10 +67,11 @@ impl Particle {
     // }
 
     pub fn new_random(width: usize, height: usize) -> Self {
+        let normal = Normal::new(0.0, 500.0).unwrap();
         let mut rng = rand::thread_rng();
         Self {
-            x: rng.gen_range(0.0..width as f32),
-            y: rng.gen_range(0.0..height as f32),
+            x: normal.sample(&mut rng) + width as f32 / 2.0,
+            y: normal.sample(&mut rng) + height as f32 / 2.0,
             dx: 0.0,
             dy: 0.0,
         }
