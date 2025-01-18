@@ -2,9 +2,8 @@
 
 use std::marker::PhantomData;
 use std::mem;
-use std::sync::mpsc::{Receiver, RecvError, Sender, SyncSender, channel, sync_channel};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::{mpmc, mpsc};
+use std::thread;
 
 enum Message {
     NewJob(Thunk<'static>),
@@ -26,14 +25,13 @@ type Thunk<'a> = Box<dyn FnBox + Send + 'a>;
 /// A threadpool that acts as a handle to a number
 /// of threads spawned at construction.
 pub struct Pool {
-    job_sender: Sender<Message>,
+    job_sender: mpmc::Sender<Message>,
     threads: Vec<ThreadData>,
 }
 
 struct ThreadData {
-    _thread_join_handle: JoinHandle<()>,
-    pool_sync_rx: Receiver<()>,
-    thread_sync_tx: SyncSender<()>,
+    pool_sync_rx: mpsc::Receiver<()>,
+    thread_sync_tx: mpsc::SyncSender<()>,
 }
 
 impl Pool {
@@ -42,26 +40,20 @@ impl Pool {
     pub fn new(n: usize) -> Pool {
         assert!(n >= 1);
 
-        let (job_sender, job_receiver) = channel();
-        let job_receiver = Arc::new(Mutex::new(job_receiver));
+        let (job_sender, job_receiver) = mpmc::channel();
 
         let mut threads = Vec::with_capacity(n as usize);
 
         // spawn n threads, put them in waiting mode
         for id in 0..n {
+            let (pool_sync_tx, pool_sync_rx) = mpsc::sync_channel::<()>(0);
+            let (thread_sync_tx, thread_sync_rx) = mpsc::sync_channel::<()>(0);
+
             let job_receiver = job_receiver.clone();
 
-            let (pool_sync_tx, pool_sync_rx) = sync_channel::<()>(0);
-            let (thread_sync_tx, thread_sync_rx) = sync_channel::<()>(0);
-
-            let thread = thread::spawn(move || {
+            let _ = thread::spawn(move || {
                 loop {
-                    let message = {
-                        // Only lock jobs for the time it takes
-                        // to get a job, not run it.
-                        let lock = job_receiver.lock().unwrap();
-                        lock.recv()
-                    };
+                    let message = job_receiver.recv();
 
                     match message {
                         Ok(Message::NewJob(job)) => {
@@ -95,7 +87,6 @@ impl Pool {
             });
 
             threads.push(ThreadData {
-                _thread_join_handle: thread,
                 pool_sync_rx,
                 thread_sync_tx,
             });
@@ -166,7 +157,7 @@ impl<'scope> Scope<'_, 'scope> {
         // received and reacted to its Join message.
         let mut worker_panic = false;
         for thread_data in &self.pool.threads {
-            if let Err(RecvError) = thread_data.pool_sync_rx.recv() {
+            if let Err(_) = thread_data.pool_sync_rx.recv() {
                 worker_panic = true;
             }
         }

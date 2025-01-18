@@ -1,4 +1,4 @@
-#![feature(sync_unsafe_cell)]
+#![feature(sync_unsafe_cell, mpmc_channel)]
 mod app_softbuffer;
 mod scoped_threadpool;
 // mod app_minifb;
