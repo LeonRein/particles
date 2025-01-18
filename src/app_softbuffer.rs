@@ -1,5 +1,5 @@
 use core::{f32, panic};
-use std::cell::{RefCell, SyncUnsafeCell};
+use std::cell::SyncUnsafeCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
@@ -15,31 +15,26 @@ use crate::particles::Particles;
 use std::thread::available_parallelism;
 
 const TARGET_FRAMETIME: f32 = 20.0;
-const N_INITIAL_PARTICELS: usize = 10_000_000;
-const PARTICEL_CHUNK_LEN: usize = 10000;
+const N_INITIAL_PARTICELS: usize = 100_000;
 
 struct AppData {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
 }
 
-struct App {
+struct App<'a> {
     data: Option<AppData>,
     last_frame_time: Instant,
     n_frame: u32,
-    particles: Particles,
-    threadpool: Rc<RefCell<Pool>>,
+    particles: Particles<'a>,
+    threadpool: &'a Pool,
     mouse_pos: Option<(f32, f32)>,
     mouse_down: bool,
-    n_threads: usize,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        let n_threads = available_parallelism().unwrap().get();
-        println!("n_threads = {}", n_threads);
-        let threadpool = Rc::new(RefCell::new(Pool::new(n_threads)));
-        let particles = Particles::new(N_INITIAL_PARTICELS, 1280, 720, Rc::clone(&threadpool));
+impl<'a> App<'a> {
+    fn new(threadpool: &'a Pool) -> Self {
+        let particles = Particles::new(N_INITIAL_PARTICELS, 1280, 720, threadpool);
         App {
             data: None,
             last_frame_time: Instant::now(),
@@ -48,12 +43,11 @@ impl Default for App {
             particles,
             mouse_pos: None,
             mouse_down: false,
-            n_threads,
         }
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler for App<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Rc::new(
             event_loop
@@ -82,7 +76,7 @@ impl ApplicationHandler for App {
                     N_INITIAL_PARTICELS,
                     size.width as usize,
                     size.height as usize,
-                    Rc::clone(&self.threadpool),
+                    self.threadpool,
                 )
             }
             WindowEvent::CursorMoved {
@@ -113,49 +107,33 @@ impl ApplicationHandler for App {
                     (size.width as usize, size.height as usize)
                 };
 
-                // let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
-                // if frametime_ratio > 1.0 {
-                //     let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
-                //     self.particles.add_particles(n as usize, width, height);
-                // } else {
-                //     let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
-                //     for _ in 0..n as usize {
-                //         self.particles.particles.pop();
-                //     }
-                // }
+                let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
+                if frametime_ratio > 1.0 {
+                    let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
+                    self.particles.add_particles(n as usize, width, height);
+                } else {
+                    let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
+                    for _ in 0..n as usize {
+                        self.particles.particles.pop();
+                    }
+                }
 
                 self.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
-                let count_chunk_len = self.particles.particles.len() / self.n_threads;
-                let count_chunk_len = 100;
+                let particles_chunk_len =
+                    self.particles.particles.len() / self.threadpool.thread_count() as usize / 100;
 
-                let particles_chunks = self.particles.particles.chunks(count_chunk_len);
-                // println!("{}", particles_chunks.len());
+                let particles_chunks = self.particles.particles.chunks(particles_chunk_len);
 
-                let super_count_buffer_cell = (0..self.n_threads)
+                let super_count_buffer_cell = (0..self.threadpool.thread_count())
                     .map(|_| vec![0_u16; width * height])
                     .map(SyncUnsafeCell::new)
                     .collect::<Vec<_>>();
 
                 let super_count_buffer_cell_ref = &super_count_buffer_cell;
-                // let super_count_buffer = &(0..self.n_threads)
-                //     .map(|_| vec![0_u16; width * height])
-                //     .collect::<Vec<_>>();
 
-                // let super_count_buffer_mutex = (0..self.n_threads)
-                //     .map(|_| vec![0_u16; width * height])
-                //     .map(Mutex::new)
-                //     .collect::<Vec<_>>();
-
-                // let super_count_buffer_mutex_ref = &super_count_buffer_mutex;
-
-                // let mut count_buffer = vec![0_u16; width * height * COUNT_CHUNK_LEN];
-                // let super_count_buffer = &count_buffer
-                //     .chunks_exact_mut(COUNT_CHUNK_LEN)
-                //     .collect::<Vec<_>>();
-
-                self.threadpool.borrow_mut().scoped(|scope| {
+                self.threadpool.scoped(|scope| {
                     for particles_chunk in particles_chunks {
                         scope.execute(move |id| {
                             for particle in particles_chunk {
@@ -192,7 +170,10 @@ impl ApplicationHandler for App {
                 let mut pixel_buffer = surface.buffer_mut().unwrap();
                 pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
-                let pixel_chunk_len = usize::max(width * height / self.n_threads / 100, 1);
+                let pixel_chunk_len = usize::max(
+                    width * height / self.threadpool.thread_count() as usize / 100,
+                    1,
+                );
 
                 let pixel_buffer_chunks = pixel_buffer
                     .chunks_exact_mut(pixel_chunk_len)
@@ -212,7 +193,7 @@ impl ApplicationHandler for App {
                     })
                     .collect::<Vec<_>>();
 
-                self.threadpool.borrow_mut().scoped(|scope| {
+                self.threadpool.scoped(|scope| {
                     for (i_chunk, pixel_buffer_chunk) in pixel_buffer_chunks.into_iter().enumerate()
                     {
                         let mut count_chunks = Vec::new();
@@ -253,7 +234,9 @@ pub fn run() {
     // dispatched any events. This is ideal for games and similar applications.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::default();
+    let n_threads = available_parallelism().unwrap().get();
+    let threadpool = Pool::new(n_threads);
+    let mut app = App::new(&threadpool);
     let _ = event_loop.run_app(&mut app);
 }
 

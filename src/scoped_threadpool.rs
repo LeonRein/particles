@@ -160,7 +160,7 @@ impl Pool {
     ///
     /// This method will block until the closure and all its jobs have
     /// run to completion.
-    pub fn scoped<'pool, 'scope, F, R>(&'pool mut self, f: F) -> R
+    pub fn scoped<'pool, 'scope, F, R>(&'pool self, f: F) -> R
     where
         F: FnOnce(&Scope<'pool, 'scope>) -> R,
     {
@@ -181,7 +181,7 @@ impl Pool {
 
 /// Handle to the scope during which the threadpool is borrowed.
 pub struct Scope<'pool, 'scope> {
-    pool: &'pool mut Pool,
+    pool: &'pool Pool,
     // The 'scope needs to be invariant... it seems?
     _marker: PhantomData<::std::cell::Cell<&'scope mut ()>>,
 }

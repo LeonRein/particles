@@ -1,14 +1,14 @@
 use crate::scoped_threadpool::Pool;
 use rand_distr::{Distribution, Normal};
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::time::Duration;
 
-pub struct Particles {
+pub struct Particles<'a> {
     pub particles: Vec<Particle>,
-    threadpool: Rc<RefCell<Pool>>,
+    threadpool: &'a Pool,
 }
 
-impl Particles {
-    pub fn new(n: usize, width: usize, height: usize, threadpool: Rc<RefCell<Pool>>) -> Self {
+impl<'a> Particles<'a> {
+    pub fn new(n: usize, width: usize, height: usize, threadpool: &'a Pool) -> Self {
         let mut particles = Vec::<Particle>::with_capacity(n);
         for _ in 0..n {
             particles.push(Particle::new_random(width, height));
@@ -38,7 +38,7 @@ impl Particles {
 
         let particles_chunks = self.particles.chunks_mut(10000);
 
-        self.threadpool.borrow_mut().scoped(|scope| {
+        self.threadpool.scoped(|scope| {
             for particles_chunk in particles_chunks {
                 scope.execute(move |_| {
                     for particle in particles_chunk {
