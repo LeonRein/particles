@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
 
-use scoped_threadpool::Pool;
+use crate::scoped_threadpool::Pool;
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -37,7 +37,7 @@ impl Default for App {
     fn default() -> Self {
         let n_threads = available_parallelism().unwrap().get();
         println!("n_threads = {}", n_threads);
-        let threadpool = Rc::new(RefCell::new(Pool::new(n_threads as u32)));
+        let threadpool = Rc::new(RefCell::new(Pool::new(n_threads)));
         let particles = Particles::new(N_INITIAL_PARTICELS, 1280, 720, Rc::clone(&threadpool));
         App {
             data: None,
@@ -143,7 +143,8 @@ impl ApplicationHandler for App {
                     for (particles_chunk, count_buffer) in
                         particles_chunks.zip(super_count_buffer.iter_mut())
                     {
-                        scope.execute(move || {
+                        scope.execute(move |id| {
+                            println!("{}", id);
                             for particle in particles_chunk {
                                 if particle.x < 0.0
                                     || particle.x as usize >= width - 1
@@ -192,7 +193,7 @@ impl ApplicationHandler for App {
                         for count_buffer_chunks in super_count_buffer_chunks {
                             count_chunks.push(count_buffer_chunks[i_chunk]);
                         }
-                        scope.execute(move || {
+                        scope.execute(move |_| {
                             for (i_pixel, pixel) in pixel_buffer_chunk.iter_mut().enumerate() {
                                 let index = i_chunk * pixel_chunk_len + i_pixel;
                                 let x = (index % width) as f32;

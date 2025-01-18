@@ -1,6 +1,5 @@
-use rand::prelude::*;
+use crate::scoped_threadpool::Pool;
 use rand_distr::{Distribution, Normal};
-use scoped_threadpool::Pool;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 pub struct Particles {
@@ -41,7 +40,7 @@ impl Particles {
 
         self.threadpool.borrow_mut().scoped(|scope| {
             for particles_chunk in particles_chunks {
-                scope.execute(move || {
+                scope.execute(move |_| {
                     for particle in particles_chunk {
                         if mouse_down {
                             if let Some((x, y)) = mouse_pos {
