@@ -9,21 +9,22 @@ pub struct Particles<'a> {
 }
 
 impl<'a> Particles<'a> {
-    pub fn new(n: usize, width: usize, height: usize, threadpool: &'a Pool) -> Self {
-        let mut particles = Vec::<Particle>::with_capacity(n);
-        for _ in 0..n {
-            particles.push(Particle::new_random(width, height));
-        }
+    pub fn new(threadpool: &'a Pool) -> Self {
         Self {
-            particles,
+            particles: Vec::new(),
             threadpool,
         }
     }
 
-    pub fn add_particles(&mut self, n: usize, width: usize, height: usize) {
+    pub fn add_particles(&mut self, n: usize, width: u32, height: u32) {
         for _ in 0..n {
             self.particles.push(Particle::new_random(width, height));
         }
+    }
+
+    pub fn reset(&mut self, n: usize, width: u32, height: u32) {
+        self.particles.clear();
+        self.add_particles(n, width, height);
     }
 
     #[inline(never)]
@@ -73,7 +74,7 @@ pub struct Particle {
 }
 
 impl Particle {
-    pub fn new_random(width: usize, height: usize) -> Self {
+    pub fn new_random(width: u32, height: u32) -> Self {
         let mut rng = rand::thread_rng();
         Self {
             x: rng.gen_range(0.0..width as f32),

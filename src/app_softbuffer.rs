@@ -1,5 +1,6 @@
 use core::{f32, panic};
 use std::cell::SyncUnsafeCell;
+use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
@@ -15,18 +16,19 @@ use crate::particles::Particles;
 use std::thread::available_parallelism;
 
 const TARGET_FRAMETIME: f32 = 20.0;
-const N_INITIAL_PARTICELS: usize = 100_000;
+const N_INITIAL_PARTICELS: usize = 1_000;
 
-struct AppData {
+struct AppData<'a> {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
+    particles: Particles<'a>,
 }
 
 struct App<'a> {
-    data: Option<AppData>,
-    last_frame_time: Instant,
+    data: Option<AppData<'a>>,
+    last_frametime: Instant,
+    frametime_buffer: VecDeque<f32>,
     n_frame: u32,
-    particles: Particles<'a>,
     threadpool: &'a Pool,
     mouse_pos: Option<(f32, f32)>,
     mouse_down: bool,
@@ -34,13 +36,12 @@ struct App<'a> {
 
 impl<'a> App<'a> {
     fn new(threadpool: &'a Pool) -> Self {
-        let particles = Particles::new(N_INITIAL_PARTICELS, 1280, 720, threadpool);
         App {
             data: None,
-            last_frame_time: Instant::now(),
             n_frame: 0,
+            last_frametime: Instant::now(),
+            frametime_buffer: VecDeque::new(),
             threadpool,
-            particles,
             mouse_pos: None,
             mouse_down: false,
         }
@@ -56,12 +57,22 @@ impl ApplicationHandler for App<'_> {
         );
         let context = Context::new(Rc::clone(&window)).unwrap();
         let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).unwrap();
-        self.data = Some(AppData { surface, window })
+        let particles = Particles::new(self.threadpool);
+        self.data = Some(AppData {
+            surface,
+            window,
+            particles,
+        })
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _ = id;
-        let Some(AppData { window, surface }) = &mut self.data else {
+        let Some(AppData {
+            window,
+            surface,
+            particles,
+        }) = &mut self.data
+        else {
             panic!();
         };
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -72,12 +83,9 @@ impl ApplicationHandler for App<'_> {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                self.particles = Particles::new(
-                    N_INITIAL_PARTICELS,
-                    size.width as usize,
-                    size.height as usize,
-                    self.threadpool,
-                )
+                self.frametime_buffer.clear();
+                particles.reset(N_INITIAL_PARTICELS, size.width, size.height);
+                println!("window resized");
             }
             WindowEvent::CursorMoved {
                 device_id: _,
@@ -93,43 +101,50 @@ impl ApplicationHandler for App<'_> {
                 self.mouse_down = state == ElementState::Pressed;
             }
             WindowEvent::RedrawRequested => {
-                self.n_frame += 1;
-                let now = Instant::now();
-                let frametime = now.duration_since(self.last_frame_time);
-                self.last_frame_time = now;
-                if self.n_frame % 100 == 0 {
-                    println!("#{}: FPS = {}", self.n_frame, 1.0 / frametime.as_secs_f32());
-                    println!("n_particles = {}", self.particles.particles.len());
-                }
-
                 let (width, height) = {
                     let size = window.inner_size();
-                    (size.width as usize, size.height as usize)
+                    (size.width, size.height)
                 };
 
-                let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
+                self.n_frame += 1;
+                let now = Instant::now();
+                let frametime = now.duration_since(self.last_frametime);
+                self.last_frametime = now;
+
+                if self.frametime_buffer.len() > 100 {
+                    self.frametime_buffer.pop_back();
+                }
+                self.frametime_buffer.push_front(frametime.as_millis_f32());
+                let frametime_avg =
+                    self.frametime_buffer.iter().sum::<f32>() / self.frametime_buffer.len() as f32;
+
+                if self.n_frame % 100 == 0 {
+                    println!("#{}: FPS = {}", self.n_frame, 1000.0 / frametime_avg);
+                    println!("n_particles = {}", particles.particles.len());
+                }
+
+                let frametime_ratio = TARGET_FRAMETIME / frametime_avg.clamp(10.0, 100.0);
                 if frametime_ratio > 1.0 {
-                    let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
-                    self.particles.add_particles(n as usize, width, height);
-                } else {
-                    let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
+                    let n = particles.particles.len() as f32 * (frametime_ratio - 1.0) / 50.0;
+                    particles.add_particles(n as usize, width, height);
+                } else if frametime_ratio < 0.8 {
+                    let n = particles.particles.len() as f32 * (1.0 - frametime_ratio) / 50.0;
                     for _ in 0..n as usize {
-                        self.particles.particles.pop();
+                        particles.particles.pop();
                     }
                 }
 
-                self.particles
-                    .update(&frametime, self.mouse_pos, self.mouse_down);
+                particles.update(&frametime, self.mouse_pos, self.mouse_down);
 
                 let particles_chunk_len = usize::max(
-                    self.particles.particles.len() / self.threadpool.thread_count() as usize / 10,
+                    particles.particles.len() / self.threadpool.thread_count() as usize / 10,
                     1,
                 );
 
-                let particles_chunks = self.particles.particles.chunks(particles_chunk_len);
+                let particles_chunks = particles.particles.chunks(particles_chunk_len);
 
                 let super_count_buffer_cell = (0..self.threadpool.thread_count())
-                    .map(|_| vec![0_u16; width * height])
+                    .map(|_| vec![0_u16; (width * height) as usize])
                     .map(SyncUnsafeCell::new)
                     .collect::<Vec<_>>();
 
@@ -140,17 +155,17 @@ impl ApplicationHandler for App<'_> {
                         scope.execute(move |id| {
                             for particle in particles_chunk {
                                 if particle.x < 0.0
-                                    || particle.x as usize >= width - 1
+                                    || particle.x >= (width - 1) as f32
                                     || particle.y < 0.0
-                                    || particle.y as usize >= height - 1
+                                    || particle.y >= (height - 1) as f32
                                 {
                                     continue;
                                 }
 
                                 unsafe {
                                     let count_buffer = super_count_buffer_cell_ref[id].get();
-                                    (*count_buffer)
-                                        [particle.x as usize + particle.y as usize * width] += 1;
+                                    (*count_buffer)[particle.x as usize
+                                        + particle.y as usize * width as usize] += 1;
                                 }
                             }
                         });
@@ -164,18 +179,16 @@ impl ApplicationHandler for App<'_> {
 
                 surface
                     .resize(
-                        NonZeroU32::new(width as u32).unwrap(),
-                        NonZeroU32::new(height as u32).unwrap(),
+                        NonZeroU32::new(width).unwrap(),
+                        NonZeroU32::new(height).unwrap(),
                     )
                     .unwrap();
 
                 let mut pixel_buffer = surface.buffer_mut().unwrap();
                 pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
-                let pixel_chunk_len = usize::max(
-                    width * height / self.threadpool.thread_count() as usize / 10,
-                    1,
-                );
+                let pixel_chunk_len =
+                    u32::max(width * height / self.threadpool.thread_count() / 10, 1) as usize;
 
                 let pixel_buffer_chunks = pixel_buffer
                     .chunks_exact_mut(pixel_chunk_len)
@@ -205,8 +218,8 @@ impl ApplicationHandler for App<'_> {
                         scope.execute(move |_| {
                             for (i_pixel, pixel) in pixel_buffer_chunk.iter_mut().enumerate() {
                                 let index = i_chunk * pixel_chunk_len + i_pixel;
-                                let x = (index % width) as f32;
-                                let y = (index / width) as f32;
+                                let x = (index % width as usize) as f32;
+                                let y = (index / width as usize) as f32;
                                 let count = count_chunks.iter().fold(0_u16, |a, b| a + b[i_pixel])
                                     as f32
                                     * 32.0; // for pixel in pixel_buffer_chunk.iter_mut() {
