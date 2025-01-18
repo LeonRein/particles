@@ -121,8 +121,10 @@ impl ApplicationHandler for App<'_> {
                 self.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
-                let particles_chunk_len =
-                    self.particles.particles.len() / self.threadpool.thread_count() as usize / 100;
+                let particles_chunk_len = usize::max(
+                    self.particles.particles.len() / self.threadpool.thread_count() as usize / 10,
+                    1,
+                );
 
                 let particles_chunks = self.particles.particles.chunks(particles_chunk_len);
 
@@ -171,7 +173,7 @@ impl ApplicationHandler for App<'_> {
                 pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
                 let pixel_chunk_len = usize::max(
-                    width * height / self.threadpool.thread_count() as usize / 100,
+                    width * height / self.threadpool.thread_count() as usize / 10,
                     1,
                 );
 

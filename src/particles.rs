@@ -1,6 +1,7 @@
-use crate::scoped_threadpool::Pool;
-use rand_distr::{Distribution, Normal};
 use std::time::Duration;
+
+use crate::scoped_threadpool::Pool;
+use rand::Rng;
 
 pub struct Particles<'a> {
     pub particles: Vec<Particle>,
@@ -36,7 +37,12 @@ impl<'a> Particles<'a> {
         let fric_norm = f32::powf(0.988, time_norm);
         let grav_norm = 1.0 * time_norm;
 
-        let particles_chunks = self.particles.chunks_mut(10000);
+        let particles_chunk_len = usize::max(
+            self.particles.len() / self.threadpool.thread_count() as usize / 10,
+            1,
+        );
+
+        let particles_chunks = self.particles.chunks_mut(particles_chunk_len);
 
         self.threadpool.scoped(|scope| {
             for particles_chunk in particles_chunks {
@@ -67,16 +73,11 @@ pub struct Particle {
 }
 
 impl Particle {
-    // pub fn new(x: f32, y: f32, dx: f32, dy: f32) -> Self {
-    //     Self { x, y, dx, dy }
-    // }
-
     pub fn new_random(width: usize, height: usize) -> Self {
-        let normal = Normal::new(0.0, 500.0).unwrap();
         let mut rng = rand::thread_rng();
         Self {
-            x: normal.sample(&mut rng) + width as f32 / 2.0,
-            y: normal.sample(&mut rng) + height as f32 / 2.0,
+            x: rng.gen_range(0.0..width as f32),
+            y: rng.gen_range(0.0..height as f32),
             dx: 0.0,
             dy: 0.0,
         }

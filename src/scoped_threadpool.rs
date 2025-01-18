@@ -42,7 +42,7 @@ impl Pool {
 
         let (job_sender, job_receiver) = mpmc::channel();
 
-        let mut threads = Vec::with_capacity(n as usize);
+        let mut threads = Vec::with_capacity(n);
 
         // spawn n threads, put them in waiting mode
         for id in 0..n {
@@ -157,7 +157,7 @@ impl<'scope> Scope<'_, 'scope> {
         // received and reacted to its Join message.
         let mut worker_panic = false;
         for thread_data in &self.pool.threads {
-            if let Err(_) = thread_data.pool_sync_rx.recv() {
+            if thread_data.pool_sync_rx.recv().is_err() {
                 worker_panic = true;
             }
         }
