@@ -1,5 +1,5 @@
 use core::{f32, panic};
-use std::cell::RefCell;
+use std::cell::{RefCell, SyncUnsafeCell};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
@@ -15,7 +15,8 @@ use crate::particles::Particles;
 use std::thread::available_parallelism;
 
 const TARGET_FRAMETIME: f32 = 20.0;
-const N_INITIAL_PARTICELS: usize = 100_000;
+const N_INITIAL_PARTICELS: usize = 10_000_000;
+const PARTICEL_CHUNK_LEN: usize = 10000;
 
 struct AppData {
     window: Rc<Window>,
@@ -112,27 +113,42 @@ impl ApplicationHandler for App {
                     (size.width as usize, size.height as usize)
                 };
 
-                let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
-                if frametime_ratio > 1.0 {
-                    let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
-                    self.particles.add_particles(n as usize, width, height);
-                } else {
-                    let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
-                    for _ in 0..n as usize {
-                        self.particles.particles.pop();
-                    }
-                }
+                // let frametime_ratio = TARGET_FRAMETIME / frametime.as_millis() as f32;
+                // if frametime_ratio > 1.0 {
+                //     let n = self.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
+                //     self.particles.add_particles(n as usize, width, height);
+                // } else {
+                //     let n = self.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
+                //     for _ in 0..n as usize {
+                //         self.particles.particles.pop();
+                //     }
+                // }
 
                 self.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
                 let count_chunk_len = self.particles.particles.len() / self.n_threads;
+                let count_chunk_len = 100;
 
                 let particles_chunks = self.particles.particles.chunks(count_chunk_len);
+                // println!("{}", particles_chunks.len());
 
-                let mut super_count_buffer = (0..particles_chunks.len())
+                let super_count_buffer_cell = (0..self.n_threads)
                     .map(|_| vec![0_u16; width * height])
+                    .map(SyncUnsafeCell::new)
                     .collect::<Vec<_>>();
+
+                let super_count_buffer_cell_ref = &super_count_buffer_cell;
+                // let super_count_buffer = &(0..self.n_threads)
+                //     .map(|_| vec![0_u16; width * height])
+                //     .collect::<Vec<_>>();
+
+                // let super_count_buffer_mutex = (0..self.n_threads)
+                //     .map(|_| vec![0_u16; width * height])
+                //     .map(Mutex::new)
+                //     .collect::<Vec<_>>();
+
+                // let super_count_buffer_mutex_ref = &super_count_buffer_mutex;
 
                 // let mut count_buffer = vec![0_u16; width * height * COUNT_CHUNK_LEN];
                 // let super_count_buffer = &count_buffer
@@ -140,11 +156,8 @@ impl ApplicationHandler for App {
                 //     .collect::<Vec<_>>();
 
                 self.threadpool.borrow_mut().scoped(|scope| {
-                    for (particles_chunk, count_buffer) in
-                        particles_chunks.zip(super_count_buffer.iter_mut())
-                    {
+                    for particles_chunk in particles_chunks {
                         scope.execute(move |id| {
-                            println!("{}", id);
                             for particle in particles_chunk {
                                 if particle.x < 0.0
                                     || particle.x as usize >= width - 1
@@ -154,12 +167,20 @@ impl ApplicationHandler for App {
                                     continue;
                                 }
 
-                                count_buffer[particle.x as usize + particle.y as usize * width] +=
-                                    1;
+                                unsafe {
+                                    let count_buffer = super_count_buffer_cell_ref[id].get();
+                                    (*count_buffer)
+                                        [particle.x as usize + particle.y as usize * width] += 1;
+                                }
                             }
                         });
                     }
                 });
+
+                let super_count_buffer = super_count_buffer_cell
+                    .into_iter()
+                    .map(move |count_buffer_cell| count_buffer_cell.into_inner())
+                    .collect::<Vec<_>>();
 
                 surface
                     .resize(
@@ -177,7 +198,12 @@ impl ApplicationHandler for App {
                     .chunks_exact_mut(pixel_chunk_len)
                     .collect::<Vec<_>>();
 
-                let super_count_buffer_chunks = &super_count_buffer
+                // let super_count_buffer = super_count_buffer_mutex
+                //     .into_iter()
+                //     .map(|count_buffer_mutex| count_buffer_mutex.into_inner().unwrap())
+                //     .collect::<Vec<_>>();
+
+                let super_count_buffer_chunks = super_count_buffer
                     .iter()
                     .map(|count_buffer| {
                         count_buffer
@@ -190,7 +216,7 @@ impl ApplicationHandler for App {
                     for (i_chunk, pixel_buffer_chunk) in pixel_buffer_chunks.into_iter().enumerate()
                     {
                         let mut count_chunks = Vec::new();
-                        for count_buffer_chunks in super_count_buffer_chunks {
+                        for count_buffer_chunks in &super_count_buffer_chunks {
                             count_chunks.push(count_buffer_chunks[i_chunk]);
                         }
                         scope.execute(move |_| {
@@ -212,44 +238,6 @@ impl ApplicationHandler for App {
                     }
                 });
 
-                // let x = particle.x as usize;
-                // let y = particle.y as usize;
-                // let red = particle.x * 255.0 / width as f32;
-                // let green = particle.y * 255.0 / height as f32;
-                // let blue: f32 =
-                //     (1.0 - (particle.x / width as f32) - (particle.y / height as f32)) * 255.0;
-
-                // let index = x + y * width as usize;
-
-                // let val = &mut buffer[index];
-                // let mut colors = val.to_le_bytes();
-                // if *val == 0 {
-                //     *val = ((red as u32) << THREADS) + ((green as u32) << 8) + (blue as u32);
-                // } else {
-                //     colors.iter_mut().take(3).for_each(|c| {
-                //         *c = (*c).saturating_add(2);
-                //     });
-                //     *val = u32::from_le_bytes(colors);
-                // }
-
-                // for particle in &self.particles.particles {
-                //     if particle.x < 0.0
-                //         || particle.x >= width as f32
-                //         || particle.y < 0.0
-                //         || particle.y >= height as f32
-                //     {
-                //         continue;
-                //     }
-                //     let x = particle.x as usize;
-                //     let y = particle.y as usize;
-                //     let red = particle.x * 255.0 / width as f32;
-                //     let green = particle.y * 255.0 / height as f32;
-                //     let blue: f32 =
-                //         (1.0 - (particle.x / width as f32) - (particle.y / height as f32)) * 255.0;
-                //     buffer[x + y * width as usize] =
-                //         ((red as u32) << THREADS) + ((green as u32) << 8) + (blue as u32);
-                // }
-
                 pixel_buffer.present().unwrap();
                 window.request_redraw();
             }
@@ -268,3 +256,9 @@ pub fn run() {
     let mut app = App::default();
     let _ = event_loop.run_app(&mut app);
 }
+
+// unsafe fn make_mutable<T>(reference: &T) -> &mut T {
+//     let const_ptr = reference as *const T;
+//     let mut_ptr = const_ptr as *mut T;
+//     &mut *mut_ptr
+// }

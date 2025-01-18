@@ -1,3 +1,4 @@
+#![feature(sync_unsafe_cell)]
 mod app_softbuffer;
 mod scoped_threadpool;
 // mod app_minifb;
