@@ -30,7 +30,7 @@ struct App<'a> {
     frametime_buffer: VecDeque<f32>,
     n_frame: u32,
     threadpool: &'a Pool,
-    mouse_pos: Option<(f32, f32)>,
+    mouse_pos: (f32, f32),
     mouse_down: bool,
 }
 
@@ -42,7 +42,7 @@ impl<'a> App<'a> {
             last_frametime: Instant::now(),
             frametime_buffer: VecDeque::new(),
             threadpool,
-            mouse_pos: None,
+            mouse_pos: (0.0, 0.0),
             mouse_down: false,
         }
     }
@@ -91,7 +91,7 @@ impl ApplicationHandler for App<'_> {
                 device_id: _,
                 position,
             } => {
-                self.mouse_pos = Some((position.x as f32, position.y as f32));
+                self.mouse_pos = (position.x as f32, position.y as f32);
             }
             WindowEvent::MouseInput {
                 device_id: _,
@@ -154,18 +154,17 @@ impl ApplicationHandler for App<'_> {
                     for particles_chunk in particles_chunks {
                         scope.execute(move |id| {
                             for particle in particles_chunk {
-                                if particle.x < 0.0
-                                    || particle.x >= (width - 1) as f32
-                                    || particle.y < 0.0
-                                    || particle.y >= (height - 1) as f32
-                                {
-                                    continue;
-                                }
+                                let inside = particle.x >= 0.0
+                                    && particle.x < (width as f32 - 1.0)
+                                    && particle.y >= 0.0
+                                    && particle.y < (height as f32 - 1.0);
+
+                                let x = (particle.x as usize).clamp(0, width as usize - 1);
+                                let y = (particle.y as usize).clamp(0, height as usize - 1);
 
                                 unsafe {
                                     let count_buffer = super_count_buffer_cell_ref[id].get();
-                                    (*count_buffer)[particle.x as usize
-                                        + particle.y as usize * width as usize] += 1;
+                                    (*count_buffer)[x + y * width as usize] += inside as u16;
                                 }
                             }
                         });

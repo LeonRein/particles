@@ -28,12 +28,7 @@ impl<'a> Particles<'a> {
     }
 
     #[inline(never)]
-    pub fn update(
-        &mut self,
-        frametime: &Duration,
-        mouse_pos: Option<(f32, f32)>,
-        mouse_down: bool,
-    ) {
+    pub fn update(&mut self, frametime: &Duration, mouse_pos: (f32, f32), mouse_down: bool) {
         let time_norm = frametime.as_micros() as f32 / 16666.0;
         let fric_norm = f32::powf(0.988, time_norm);
         let grav_norm = 1.0 * time_norm;
@@ -49,11 +44,7 @@ impl<'a> Particles<'a> {
             for particles_chunk in particles_chunks {
                 scope.execute(move |_| {
                     for particle in particles_chunk {
-                        if mouse_down {
-                            if let Some((x, y)) = mouse_pos {
-                                particle.apply_grav(x, y, grav_norm);
-                            }
-                        }
+                        particle.apply_grav(mouse_pos.0, mouse_pos.1, mouse_down, grav_norm);
 
                         particle.apply_fric(fric_norm);
 
@@ -85,13 +76,13 @@ impl Particle {
     }
 
     #[inline(always)]
-    pub fn apply_grav(&mut self, x: f32, y: f32, grav_norm: f32) {
+    pub fn apply_grav(&mut self, x: f32, y: f32, mouse_down: bool, grav_norm: f32) {
         let dx = self.x - x;
         let dy = self.y - y;
         let dist_sqr = f32::sqrt(dx * dx + dy * dy);
 
-        self.dx -= grav_norm * dx / dist_sqr;
-        self.dy -= grav_norm * dy / dist_sqr;
+        self.dx -= mouse_down as u32 as f32 * grav_norm * dx / dist_sqr;
+        self.dy -= mouse_down as u32 as f32 * grav_norm * dy / dist_sqr;
     }
 
     pub fn apply_fric(&mut self, fric_norm: f32) {
