@@ -1,46 +1,4 @@
-//! This crate provides a stable, safe and scoped threadpool.
-//!
-//! It can be used to execute a number of short-lived jobs in parallel
-//! without the need to respawn the underlying threads.
-//!
-//! Jobs are runnable by borrowing the pool for a given scope, during which
-//! an arbitrary number of them can be executed. These jobs can access data of
-//! any lifetime outside of the pools scope, which allows working on
-//! non-`'static` references in parallel.
-//!
-//! For safety reasons, a panic inside a worker thread will not be isolated,
-//! but rather propagate to the outside of the pool.
-//!
-//! # Examples:
-//!
-//! ```rust
-//! extern crate scoped_threadpool;
-//! use scoped_threadpool::Pool;
-//!
-//! fn main() {
-//!     // Create a threadpool holding 4 threads
-//!     let mut pool = Pool::new(4);
-//!
-//!     let mut vec = vec![0, 1, 2, 3, 4, 5, 6, 7];
-//!
-//!     // Use the threads as scoped threads that can
-//!     // reference anything outside this closure
-//!     pool.scoped(|scope| {
-//!         // Create references to each element in the vector ...
-//!         for e in &mut vec {
-//!             // ... and add 1 to it in a seperate thread
-//!             scope.execute(move || {
-//!                 *e += 1;
-//!             });
-//!         }
-//!     });
-//!
-//!     assert_eq!(vec, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-//! }
-//! ```
-
 #![allow(dead_code)]
-extern crate lazy_static;
 
 use std::marker::PhantomData;
 use std::mem;
@@ -65,17 +23,11 @@ impl<F: FnOnce(usize)> FnBox for F {
 
 type Thunk<'a> = Box<dyn FnBox + Send + 'a>;
 
-impl Drop for Pool {
-    fn drop(&mut self) {
-        self.job_sender = None;
-    }
-}
-
 /// A threadpool that acts as a handle to a number
 /// of threads spawned at construction.
 pub struct Pool {
+    job_sender: Sender<Message>,
     threads: Vec<ThreadData>,
-    job_sender: Option<Sender<Message>>,
 }
 
 struct ThreadData {
@@ -151,7 +103,7 @@ impl Pool {
 
         Pool {
             threads,
-            job_sender: Some(job_sender),
+            job_sender,
         }
     }
 
@@ -196,31 +148,14 @@ impl<'scope> Scope<'_, 'scope> {
     where
         F: FnOnce(usize) + Send + 'scope,
     {
-        self.execute_(f)
-    }
-
-    fn execute_<F>(&self, f: F)
-    where
-        F: FnOnce(usize) + Send + 'scope,
-    {
         let b = unsafe { mem::transmute::<Thunk<'scope>, Thunk<'static>>(Box::new(f)) };
-        self.pool
-            .job_sender
-            .as_ref()
-            .unwrap()
-            .send(Message::NewJob(b))
-            .unwrap();
+        self.pool.job_sender.send(Message::NewJob(b)).unwrap();
     }
 
     /// Blocks until all currently queued jobs have run to completion.
     pub fn join_all(&self) {
         for _ in 0..self.pool.threads.len() {
-            self.pool
-                .job_sender
-                .as_ref()
-                .unwrap()
-                .send(Message::Join)
-                .unwrap();
+            self.pool.job_sender.send(Message::Join).unwrap();
         }
 
         // Synchronize/Join with threads
@@ -269,7 +204,7 @@ mod tests {
 
     #[test]
     fn smoketest() {
-        let mut pool = Pool::new(4);
+        let pool = Pool::new(4);
 
         for i in 1..7 {
             let mut vec = vec![0, 1, 2, 3, 4];
@@ -293,7 +228,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn thread_panic() {
-        let mut pool = Pool::new(4);
+        let pool = Pool::new(4);
         pool.scoped(|scoped| {
             scoped.execute(move |_| panic!());
         });
@@ -302,7 +237,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn scope_panic() {
-        let mut pool = Pool::new(4);
+        let pool = Pool::new(4);
         pool.scoped(|_scoped| panic!());
     }
 
@@ -315,7 +250,7 @@ mod tests {
 
     #[test]
     fn join_all() {
-        let mut pool = Pool::new(4);
+        let pool = Pool::new(4);
 
         let (tx_, rx) = sync::mpsc::channel();
 
@@ -356,7 +291,7 @@ mod tests {
         // Use a thread here to handle the expected panic from the pool. Should
         // be switched to use panic::recover instead when it becomes stable.
         let handle = thread::spawn(move || {
-            let mut pool = Pool::new(8);
+            let pool = Pool::new(8);
             let _on_scope_end = OnScopeEnd(tx_.clone());
             pool.scoped(|scoped| {
                 scoped.execute(move |_| {
@@ -384,7 +319,7 @@ mod tests {
 
     #[test]
     fn safe_execute() {
-        let mut pool = Pool::new(4);
+        let pool = Pool::new(4);
         pool.scoped(|scoped| {
             scoped.execute(move |_| {});
         });

@@ -1052,7 +1052,6 @@ dependencies = [
 name = "particles"
 version = "0.1.0"
 dependencies = [
- "lazy_static",
  "minifb",
  "rand",
  "rand_distr",
