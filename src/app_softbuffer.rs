@@ -124,11 +124,11 @@ impl ApplicationHandler for App<'_> {
                 }
 
                 let frametime_ratio = TARGET_FRAMETIME / frametime_avg.clamp(10.0, 100.0);
-                if frametime_ratio > 1.0 {
-                    let n = particles.particles.len() as f32 * (frametime_ratio - 1.0) / 50.0;
+                if frametime_ratio > 1.1 {
+                    let n = particles.particles.len() as f32 * (frametime_ratio - 1.0) / 3.0;
                     particles.add_particles(n as usize, width, height);
-                } else if frametime_ratio < 0.8 {
-                    let n = particles.particles.len() as f32 * (1.0 - frametime_ratio) / 50.0;
+                } else if frametime_ratio < 0.9 {
+                    let n = particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
                     for _ in 0..n as usize {
                         particles.particles.pop();
                     }
