@@ -215,11 +215,13 @@ impl ApplicationHandler for App<'_> {
                                 let index = i_chunk * pixel_chunk_len + i_pixel;
                                 let x = (index % width as usize) as f32;
                                 let y = (index / width as usize) as f32;
-                                let count = *count.get_mut() as f32 * 32.0; // for pixel in pixel_buffer_chunk.iter_mut() {
-                                let red = (x * count / width as f32) as u8;
-                                let green = (y * count / height as f32) as u8;
-                                let blue = ((1.0 - (x / width as f32) - (y / height as f32))
-                                    * count) as u8;
+                                let count_mult = *count.get_mut() as f32 * 10.0; // for pixel in pixel_buffer_chunk.iter_mut() {
+                                let red = (x * count_mult / width as f32) as u8;
+                                let green = (y * count_mult / height as f32) as u8;
+                                let blue = (((1.0 - (x / width as f32) - (y / height as f32))
+                                    * count_mult)
+                                    + f32::max(0.0, count_mult - 255.0 * 10.0))
+                                    as u8;
                                 *pixel =
                                     ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32)
                             }
