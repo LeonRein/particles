@@ -3,6 +3,7 @@ use std::cell::SyncUnsafeCell;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Instant;
 
 use crate::scoped_threadpool::Pool;
@@ -22,7 +23,7 @@ struct AppData<'a> {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     particles: Particles<'a>,
-    super_count_buffer_cell: Vec<SyncUnsafeCell<Vec<u16>>>,
+    count_buffer: Vec<AtomicU16>,
 }
 
 struct App<'a> {
@@ -63,7 +64,7 @@ impl ApplicationHandler for App<'_> {
             surface,
             window,
             particles,
-            super_count_buffer_cell: Vec::new(),
+            count_buffer: Vec::new(),
         })
     }
 
@@ -83,10 +84,10 @@ impl ApplicationHandler for App<'_> {
                 self.frametime_buffer.clear();
                 data.particles
                     .reset(N_INITIAL_PARTICELS, size.width, size.height);
-                data.super_count_buffer_cell = (0..self.threadpool.thread_count())
-                    .map(|_| vec![0_u16; (size.width * size.height) as usize])
-                    .map(SyncUnsafeCell::new)
-                    .collect::<Vec<_>>();
+                let buffer_size = (size.width * size.height) as usize;
+                data.count_buffer.clear();
+                data.count_buffer.reserve(buffer_size);
+                (0..buffer_size).for_each(|_| data.count_buffer.push(AtomicU16::new(0)));
             }
             WindowEvent::CursorMoved {
                 device_id: _,
@@ -138,6 +139,10 @@ impl ApplicationHandler for App<'_> {
                 data.particles
                     .update(&frametime, self.mouse_pos, self.mouse_down);
 
+                data.count_buffer.iter().for_each(|count| {
+                    count.store(0, Ordering::Relaxed);
+                });
+
                 let particles_chunk_len = usize::max(
                     data.particles.particles.len() / self.threadpool.thread_count() as usize / 10,
                     1,
@@ -145,15 +150,11 @@ impl ApplicationHandler for App<'_> {
 
                 let particles_chunks = data.particles.particles.chunks(particles_chunk_len);
 
-                data.super_count_buffer_cell
-                    .iter_mut()
-                    .for_each(|count_bufer_cell| count_bufer_cell.get_mut().fill(0));
-
-                let super_count_buffer_cell_ref = &data.super_count_buffer_cell;
+                let count_buffer_ref = &data.count_buffer;
 
                 self.threadpool.scoped(|scope| {
                     for particles_chunk in particles_chunks {
-                        scope.execute(move |id| {
+                        scope.execute(move |_| {
                             for particle in particles_chunk {
                                 let inside = particle.x >= 0.0
                                     && particle.x < (width as f32 - 1.0)
@@ -163,20 +164,12 @@ impl ApplicationHandler for App<'_> {
                                 let x = (particle.x as usize).clamp(0, width as usize - 1);
                                 let y = (particle.y as usize).clamp(0, height as usize - 1);
 
-                                unsafe {
-                                    let count_buffer = super_count_buffer_cell_ref[id].get();
-                                    (*count_buffer)[x + y * width as usize] += inside as u16;
-                                }
+                                count_buffer_ref[x + y * width as usize]
+                                    .fetch_add(inside as u16, Ordering::Relaxed);
                             }
                         });
                     }
                 });
-
-                let super_count_buffer = data
-                    .super_count_buffer_cell
-                    .iter_mut()
-                    .map(|count_buffer_cell| count_buffer_cell.get_mut())
-                    .collect::<Vec<_>>();
 
                 data.surface
                     .resize(
@@ -186,7 +179,6 @@ impl ApplicationHandler for App<'_> {
                     .unwrap();
 
                 let mut pixel_buffer = data.surface.buffer_mut().unwrap();
-                // pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
                 let pixel_chunk_len =
                     u32::max(width * height / self.threadpool.thread_count() / 10, 1) as usize;
@@ -195,30 +187,27 @@ impl ApplicationHandler for App<'_> {
                     .chunks_exact_mut(pixel_chunk_len)
                     .collect::<Vec<_>>();
 
-                let super_count_buffer_chunks = super_count_buffer
-                    .iter()
-                    .map(|count_buffer| {
-                        count_buffer
-                            .chunks_exact(pixel_chunk_len)
-                            .collect::<Vec<_>>()
-                    })
+                let count_buffer_chunks = data
+                    .count_buffer
+                    .chunks_exact_mut(pixel_chunk_len)
                     .collect::<Vec<_>>();
 
                 self.threadpool.scoped(|scope| {
-                    for (i_chunk, pixel_buffer_chunk) in pixel_buffer_chunks.into_iter().enumerate()
+                    for (i_chunk, (pixel_buffer_chunk, count_buffer_chunk)) in pixel_buffer_chunks
+                        .into_iter()
+                        .zip(count_buffer_chunks.into_iter())
+                        .enumerate()
                     {
-                        let mut count_chunks = Vec::new();
-                        for count_buffer_chunks in &super_count_buffer_chunks {
-                            count_chunks.push(count_buffer_chunks[i_chunk]);
-                        }
                         scope.execute(move |_| {
-                            for (i_pixel, pixel) in pixel_buffer_chunk.iter_mut().enumerate() {
+                            for (i_pixel, (pixel, count)) in pixel_buffer_chunk
+                                .iter_mut()
+                                .zip(count_buffer_chunk.iter_mut())
+                                .enumerate()
+                            {
                                 let index = i_chunk * pixel_chunk_len + i_pixel;
                                 let x = (index % width as usize) as f32;
                                 let y = (index / width as usize) as f32;
-                                let count = count_chunks.iter().fold(0_u16, |a, b| a + b[i_pixel])
-                                    as f32
-                                    * 32.0; // for pixel in pixel_buffer_chunk.iter_mut() {
+                                let count = *count.get_mut() as f32 * 32.0; // for pixel in pixel_buffer_chunk.iter_mut() {
                                 let red = (x * count / width as f32) as u8;
                                 let green = (y * count / height as f32) as u8;
                                 let blue = ((1.0 - (x / width as f32) - (y / height as f32))
