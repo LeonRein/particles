@@ -22,6 +22,7 @@ struct AppData<'a> {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     particles: Particles<'a>,
+    super_count_buffer_cell: Vec<SyncUnsafeCell<Vec<u16>>>,
 }
 
 struct App<'a> {
@@ -62,17 +63,13 @@ impl ApplicationHandler for App<'_> {
             surface,
             window,
             particles,
+            super_count_buffer_cell: Vec::new(),
         })
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _ = id;
-        let Some(AppData {
-            window,
-            surface,
-            particles,
-        }) = &mut self.data
-        else {
+        let Some(data) = &mut self.data else {
             panic!();
         };
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -84,8 +81,12 @@ impl ApplicationHandler for App<'_> {
             }
             WindowEvent::Resized(size) => {
                 self.frametime_buffer.clear();
-                particles.reset(N_INITIAL_PARTICELS, size.width, size.height);
-                println!("window resized");
+                data.particles
+                    .reset(N_INITIAL_PARTICELS, size.width, size.height);
+                data.super_count_buffer_cell = (0..self.threadpool.thread_count())
+                    .map(|_| vec![0_u16; (size.width * size.height) as usize])
+                    .map(SyncUnsafeCell::new)
+                    .collect::<Vec<_>>();
             }
             WindowEvent::CursorMoved {
                 device_id: _,
@@ -102,7 +103,7 @@ impl ApplicationHandler for App<'_> {
             }
             WindowEvent::RedrawRequested => {
                 let (width, height) = {
-                    let size = window.inner_size();
+                    let size = data.window.inner_size();
                     (size.width, size.height)
                 };
 
@@ -120,35 +121,35 @@ impl ApplicationHandler for App<'_> {
 
                 if self.n_frame % 100 == 0 {
                     println!("#{}: FPS = {}", self.n_frame, 1000.0 / frametime_avg);
-                    println!("n_particles = {}", particles.particles.len());
+                    println!("n_particles = {}", data.particles.particles.len());
                 }
 
                 let frametime_ratio = TARGET_FRAMETIME / frametime_avg.clamp(10.0, 100.0);
                 if frametime_ratio > 1.1 {
-                    let n = particles.particles.len() as f32 * (frametime_ratio - 1.0) / 3.0;
-                    particles.add_particles(n as usize, width, height);
+                    let n = data.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 3.0;
+                    data.particles.add_particles(n as usize, width, height);
                 } else if frametime_ratio < 0.9 {
-                    let n = particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
+                    let n = data.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
                     for _ in 0..n as usize {
-                        particles.particles.pop();
+                        data.particles.particles.pop();
                     }
                 }
 
-                particles.update(&frametime, self.mouse_pos, self.mouse_down);
+                data.particles
+                    .update(&frametime, self.mouse_pos, self.mouse_down);
 
                 let particles_chunk_len = usize::max(
-                    particles.particles.len() / self.threadpool.thread_count() as usize / 10,
+                    data.particles.particles.len() / self.threadpool.thread_count() as usize / 10,
                     1,
                 );
 
-                let particles_chunks = particles.particles.chunks(particles_chunk_len);
+                let particles_chunks = data.particles.particles.chunks(particles_chunk_len);
 
-                let super_count_buffer_cell = (0..self.threadpool.thread_count())
-                    .map(|_| vec![0_u16; (width * height) as usize])
-                    .map(SyncUnsafeCell::new)
-                    .collect::<Vec<_>>();
+                data.super_count_buffer_cell
+                    .iter_mut()
+                    .for_each(|count_bufer_cell| count_bufer_cell.get_mut().fill(0));
 
-                let super_count_buffer_cell_ref = &super_count_buffer_cell;
+                let super_count_buffer_cell_ref = &data.super_count_buffer_cell;
 
                 self.threadpool.scoped(|scope| {
                     for particles_chunk in particles_chunks {
@@ -171,20 +172,21 @@ impl ApplicationHandler for App<'_> {
                     }
                 });
 
-                let super_count_buffer = super_count_buffer_cell
-                    .into_iter()
-                    .map(move |count_buffer_cell| count_buffer_cell.into_inner())
+                let super_count_buffer = data
+                    .super_count_buffer_cell
+                    .iter_mut()
+                    .map(|count_buffer_cell| count_buffer_cell.get_mut())
                     .collect::<Vec<_>>();
 
-                surface
+                data.surface
                     .resize(
                         NonZeroU32::new(width).unwrap(),
                         NonZeroU32::new(height).unwrap(),
                     )
                     .unwrap();
 
-                let mut pixel_buffer = surface.buffer_mut().unwrap();
-                pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
+                let mut pixel_buffer = data.surface.buffer_mut().unwrap();
+                // pixel_buffer.iter_mut().for_each(|pixel| *pixel = 0);
 
                 let pixel_chunk_len =
                     u32::max(width * height / self.threadpool.thread_count() / 10, 1) as usize;
@@ -192,11 +194,6 @@ impl ApplicationHandler for App<'_> {
                 let pixel_buffer_chunks = pixel_buffer
                     .chunks_exact_mut(pixel_chunk_len)
                     .collect::<Vec<_>>();
-
-                // let super_count_buffer = super_count_buffer_mutex
-                //     .into_iter()
-                //     .map(|count_buffer_mutex| count_buffer_mutex.into_inner().unwrap())
-                //     .collect::<Vec<_>>();
 
                 let super_count_buffer_chunks = super_count_buffer
                     .iter()
@@ -234,7 +231,7 @@ impl ApplicationHandler for App<'_> {
                 });
 
                 pixel_buffer.present().unwrap();
-                window.request_redraw();
+                data.window.request_redraw();
             }
             _ => (),
         }
