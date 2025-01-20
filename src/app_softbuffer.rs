@@ -1,5 +1,4 @@
 use core::{f32, panic};
-use std::cell::SyncUnsafeCell;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -122,12 +121,12 @@ impl ApplicationHandler for App<'_> {
 
                 if self.n_frame % 100 == 0 {
                     println!("#{}: FPS = {}", self.n_frame, 1000.0 / frametime_avg);
-                    println!("n_particles = {}", data.particles.particles.len());
+                    println!("n_particles = {}", data.particles.len());
                 }
 
                 let frametime_ratio = TARGET_FRAMETIME / frametime_avg.clamp(10.0, 100.0);
                 if frametime_ratio > 1.1 {
-                    let n = data.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 3.0;
+                    let n = data.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 2.0;
                     data.particles.add_particles(n as usize, width, height);
                 } else if frametime_ratio < 0.9 {
                     let n = data.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
@@ -156,16 +155,23 @@ impl ApplicationHandler for App<'_> {
                     for particles_chunk in particles_chunks {
                         scope.execute(move |_| {
                             for particle in particles_chunk {
-                                let inside = particle.x >= 0.0
-                                    && particle.x < (width as f32 - 1.0)
-                                    && particle.y >= 0.0
-                                    && particle.y < (height as f32 - 1.0);
+                                for (x, y) in particle
+                                    .x
+                                    .as_array()
+                                    .iter()
+                                    .zip(particle.y.as_array().iter())
+                                {
+                                    let inside = *x >= 0.0
+                                        && *x < (width as f32 - 1.0)
+                                        && *y >= 0.0
+                                        && *y < (height as f32 - 1.0);
 
-                                let x = (particle.x as usize).clamp(0, width as usize - 1);
-                                let y = (particle.y as usize).clamp(0, height as usize - 1);
+                                    let x = (*x as usize).clamp(0, width as usize - 1);
+                                    let y = (*y as usize).clamp(0, height as usize - 1);
 
-                                count_buffer_ref[x + y * width as usize]
-                                    .fetch_add(inside as u16, Ordering::Relaxed);
+                                    count_buffer_ref[x + y * width as usize]
+                                        .fetch_add(inside as u16, Ordering::Relaxed);
+                                }
                             }
                         });
                     }
@@ -180,8 +186,10 @@ impl ApplicationHandler for App<'_> {
 
                 let mut pixel_buffer = data.surface.buffer_mut().unwrap();
 
-                let pixel_chunk_len =
-                    u32::max(width * height / self.threadpool.thread_count() / 10, 1) as usize;
+                let pixel_chunk_len = usize::max(
+                    pixel_buffer.len() as usize / self.threadpool.thread_count() as usize / 10,
+                    1,
+                );
 
                 let pixel_buffer_chunks = pixel_buffer
                     .chunks_exact_mut(pixel_chunk_len)
