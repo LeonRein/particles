@@ -21,6 +21,7 @@ const N_INITIAL_PARTICELS: usize = 1_000;
 struct AppData<'a> {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
+    size: (u32, u32),
     particles: Particles<'a>,
     count_buffer: Vec<AtomicU16>,
 }
@@ -64,6 +65,7 @@ impl ApplicationHandler for App<'_> {
             window,
             particles,
             count_buffer: Vec::new(),
+            size: (0, 0),
         })
     }
 
@@ -81,12 +83,19 @@ impl ApplicationHandler for App<'_> {
             }
             WindowEvent::Resized(size) => {
                 self.frametime_buffer.clear();
+                data.size = (size.width, size.height);
                 data.particles
                     .reset(N_INITIAL_PARTICELS, size.width, size.height);
                 let buffer_size = (size.width * size.height) as usize;
                 data.count_buffer.clear();
                 data.count_buffer.reserve(buffer_size);
                 (0..buffer_size).for_each(|_| data.count_buffer.push(AtomicU16::new(0)));
+                data.surface
+                    .resize(
+                        NonZeroU32::new(size.width).unwrap(),
+                        NonZeroU32::new(size.height).unwrap(),
+                    )
+                    .unwrap();
             }
             WindowEvent::CursorMoved {
                 device_id: _,
@@ -102,10 +111,7 @@ impl ApplicationHandler for App<'_> {
                 self.mouse_down = state == ElementState::Pressed;
             }
             WindowEvent::RedrawRequested => {
-                let (width, height) = {
-                    let size = data.window.inner_size();
-                    (size.width, size.height)
-                };
+                let (width, height) = data.size;
 
                 self.n_frame += 1;
                 let now = Instant::now();
@@ -126,7 +132,7 @@ impl ApplicationHandler for App<'_> {
 
                 let frametime_ratio = TARGET_FRAMETIME / frametime_avg.clamp(10.0, 100.0);
                 if frametime_ratio > 1.1 {
-                    let n = data.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 2.0;
+                    let n = data.particles.particles.len() as f32 * (frametime_ratio - 1.0) / 200.0;
                     data.particles.add_particles(n as usize, width, height);
                 } else if frametime_ratio < 0.9 {
                     let n = data.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
@@ -177,17 +183,10 @@ impl ApplicationHandler for App<'_> {
                     }
                 });
 
-                data.surface
-                    .resize(
-                        NonZeroU32::new(width).unwrap(),
-                        NonZeroU32::new(height).unwrap(),
-                    )
-                    .unwrap();
-
                 let mut pixel_buffer = data.surface.buffer_mut().unwrap();
 
                 let pixel_chunk_len = usize::max(
-                    pixel_buffer.len() as usize / self.threadpool.thread_count() as usize / 10,
+                    pixel_buffer.len() / self.threadpool.thread_count() as usize / 10,
                     1,
                 );
 
@@ -212,16 +211,16 @@ impl ApplicationHandler for App<'_> {
                                 .zip(count_buffer_chunk.iter_mut())
                                 .enumerate()
                             {
+                                let count = *count.get_mut() as f32 * 10.0;
+                                let count_upper = (count - 255.0).max(0.0) / 5.0;
+                                let count = count.min(255.0);
+
                                 let index = i_chunk * pixel_chunk_len + i_pixel;
-                                let x = (index % width as usize) as f32;
-                                let y = (index / width as usize) as f32;
-                                let count_mult = *count.get_mut() as f32 * 10.0; // for pixel in pixel_buffer_chunk.iter_mut() {
-                                let red = (x * count_mult / width as f32) as u8;
-                                let green = (y * count_mult / height as f32) as u8;
-                                let blue = (((1.0 - (x / width as f32) - (y / height as f32))
-                                    * count_mult)
-                                    + f32::max(0.0, count_mult - 255.0 * 10.0))
-                                    as u8;
+                                let x = (index % width as usize) as f32 / width as f32;
+                                let y = (index / width as usize) as f32 / height as f32;
+                                let red = (x * count + count_upper) as u8;
+                                let green = (y * count + count_upper) as u8;
+                                let blue = ((1.0 - x) * (1.0 - y) * count + count_upper) as u8;
                                 *pixel =
                                     ((red as u32) << 16) + ((green as u32) << 8) + (blue as u32)
                             }
