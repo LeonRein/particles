@@ -83,13 +83,20 @@ impl ApplicationHandler for App<'_> {
             }
             WindowEvent::Resized(size) => {
                 self.frametime_buffer.clear();
+                let dx = size.width as f32 - data.size.0 as f32;
+                let dy = size.height as f32 - data.size.1 as f32;
+                data.particles.shift(dx / 2.0, dy / 2.0);
                 data.size = (size.width, size.height);
-                data.particles
-                    .reset(N_INITIAL_PARTICELS, size.width, size.height);
+                if data.particles.particles.is_empty() {
+                    data.particles
+                        .add_particles(N_INITIAL_PARTICELS, size.width, size.height);
+                }
                 let buffer_size = (size.width * size.height) as usize;
-                data.count_buffer.clear();
-                data.count_buffer.reserve(buffer_size);
-                (0..buffer_size).for_each(|_| data.count_buffer.push(AtomicU16::new(0)));
+                // data.count_buffer.clear();
+                // data.count_buffer.reserve(buffer_size);
+                // (0..buffer_size).for_each(|_| data.count_buffer.push(AtomicU16::new(0)));
+                data.count_buffer
+                    .resize_with(buffer_size, || AtomicU16::new(0));
                 data.surface
                     .resize(
                         NonZeroU32::new(size.width).unwrap(),
@@ -111,6 +118,7 @@ impl ApplicationHandler for App<'_> {
                 self.mouse_down = state == ElementState::Pressed;
             }
             WindowEvent::RedrawRequested => {
+                data.window.request_redraw();
                 let (width, height) = data.size;
 
                 self.n_frame += 1;
@@ -136,9 +144,8 @@ impl ApplicationHandler for App<'_> {
                     data.particles.add_particles(n as usize, width, height);
                 } else if frametime_ratio < 0.9 {
                     let n = data.particles.particles.len() as f32 * (1.0 - frametime_ratio) / 200.0;
-                    for _ in 0..n as usize {
-                        data.particles.particles.pop();
-                    }
+                    let new_particles_len = data.particles.particles.len() - n as usize;
+                    data.particles.particles.truncate(new_particles_len);
                 }
 
                 data.particles
@@ -229,7 +236,6 @@ impl ApplicationHandler for App<'_> {
                 });
 
                 pixel_buffer.present().unwrap();
-                data.window.request_redraw();
             }
             _ => (),
         }

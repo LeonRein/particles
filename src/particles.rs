@@ -1,4 +1,6 @@
 use std::{
+    f32::consts::TAU,
+    ops::Mul,
     simd::{StdFloat, f32x64},
     time::Duration,
 };
@@ -22,14 +24,27 @@ impl<'a> Particles<'a> {
     }
 
     pub fn add_particles(&mut self, n: usize, width: u32, height: u32) {
-        for _ in 0..n {
+        let mut n = n;
+        if self.particles.is_empty() {
             self.particles.push(Particle::new_random(width, height));
+            n = n.saturating_sub(1);
+        }
+        let mut i = rand::thread_rng().gen_range(0..self.particles.len());
+        let part_len = self.particles.len();
+        for _ in 0..n {
+            self.particles
+                .push(Particle::new_from_existing(&self.particles[i % part_len]));
+            i += 1;
         }
     }
 
-    pub fn reset(&mut self, n: usize, width: u32, height: u32) {
-        self.particles.clear();
-        self.add_particles(n, width, height);
+    pub fn shift(&mut self, dx: f32, dy: f32) {
+        let dx = F32s::splat(dx);
+        let dy = F32s::splat(dy);
+        for particle in self.particles.iter_mut() {
+            particle.x += dx;
+            particle.y += dy;
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -83,19 +98,28 @@ pub struct Particle {
 
 impl Particle {
     pub fn new_random(width: u32, height: u32) -> Self {
-        let mut rng = rand::thread_rng();
-        let mut x = [0_f32; 64];
-        rng.fill(&mut x);
-        let x = F32s::from_slice(&x) * F32s::splat(width as f32);
-        let mut y = [0_f32; 64];
-        rng.fill(&mut y);
-        let y = F32s::from_slice(&y) * F32s::splat(height as f32);
-
-        Self {
-            x,
-            y,
+        Particle::new_from_existing(&Self {
+            x: F32s::splat(width as f32 / 2.0),
+            y: F32s::splat(height as f32 / 2.0),
             dx: F32s::splat(0.0),
             dy: F32s::splat(0.0),
+        })
+    }
+
+    pub fn new_from_existing(particle: &Self) -> Self {
+        let mut rng = rand::thread_rng();
+        let mut tmp = [0_f32; 64];
+        rng.fill(&mut tmp);
+        let d = F32s::from_slice(&tmp).mul(F32s::splat(TAU));
+        rng.fill(&mut tmp);
+        let r = F32s::from_slice(&tmp) * F32s::splat(1.0);
+        let dx = particle.dx + d.sin() * r;
+        let dy = particle.dy + d.cos() * r;
+        Self {
+            x: particle.x,
+            y: particle.y,
+            dx,
+            dy,
         }
     }
 
