@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::scoped_threadpool::Pool;
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -34,6 +34,7 @@ struct App<'a> {
     threadpool: &'a Pool,
     mouse_pos: (f32, f32),
     mouse_down: bool,
+    brightness_multiplier: f32,
 }
 
 impl<'a> App<'a> {
@@ -46,6 +47,7 @@ impl<'a> App<'a> {
             threadpool,
             mouse_pos: (0.0, 0.0),
             mouse_down: false,
+            brightness_multiplier: 10.0,
         }
     }
 }
@@ -116,6 +118,14 @@ impl ApplicationHandler for App<'_> {
                 button: MouseButton::Left,
             } => {
                 self.mouse_down = state == ElementState::Pressed;
+            }
+            WindowEvent::MouseWheel {
+                device_id: _,
+                delta: MouseScrollDelta::LineDelta(_, vertical),
+                phase: _,
+            } => {
+                self.brightness_multiplier *= 1.0 + vertical * 0.1;
+                println!("brightness: {}", self.brightness_multiplier);
             }
             WindowEvent::RedrawRequested => {
                 data.window.request_redraw();
@@ -207,6 +217,7 @@ impl ApplicationHandler for App<'_> {
                     .collect::<Vec<_>>();
 
                 self.threadpool.scoped(|scope| {
+                    let ab = self.brightness_multiplier;
                     for (i_chunk, (pixel_buffer_chunk, count_buffer_chunk)) in pixel_buffer_chunks
                         .into_iter()
                         .zip(count_buffer_chunks.into_iter())
@@ -218,7 +229,7 @@ impl ApplicationHandler for App<'_> {
                                 .zip(count_buffer_chunk.iter_mut())
                                 .enumerate()
                             {
-                                let count = *count.get_mut() as f32 * 10.0;
+                                let count = *count.get_mut() as f32 * ab;
                                 let count_upper = (count - 255.0).max(0.0) / 5.0;
                                 let count = count.min(255.0);
 
